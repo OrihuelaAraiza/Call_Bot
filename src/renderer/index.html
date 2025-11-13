@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sales Call Assistant</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      margin: 0;
+      padding: 20px;
+      background: #f6f8fb;
+      color: #1f2933;
+    }
+
+    h1 {
+      font-size: 22px;
+      margin-bottom: 8px;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 16px;
+      box-shadow: 0 5px 18px rgba(15, 23, 42, 0.08);
+    }
+
+    button {
+      padding: 10px 16px;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+      font-size: 14px;
+      margin-right: 10px;
+    }
+
+    button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .primary {
+      background: #2563eb;
+      color: #fff;
+    }
+
+    .danger {
+      background: #f97316;
+      color: #fff;
+    }
+
+    .log {
+      min-height: 90px;
+      border-radius: 8px;
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 12px;
+      font-family: 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+      font-size: 12px;
+      overflow-y: auto;
+    }
+
+    label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+    }
+
+    select {
+      width: 100%;
+      padding: 8px;
+      border-radius: 6px;
+      border: 1px solid #cbd5f5;
+      margin-top: 8px;
+      font-size: 14px;
+    }
+
+    .sources-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 8px;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      background: #e2e8f0;
+      color: #0f172a;
+    }
+  </style>
+</head>
+<body>
+  <h1>Sales Call Assistant</h1>
+  <div class="card">
+    <div id="status" class="status-pill">Initializing…</div>
+    <p id="meetingDetail">Waiting for meeting status…</p>
+  </div>
+  <div class="card">
+    <label>
+      <input type="checkbox" id="autoStartToggle" />
+      Auto-start recording when a meeting is detected
+    </label>
+  </div>
+  <div class="card">
+    <h3>Recording Controls</h3>
+    <div>
+      <button id="startRecording" class="primary">Start Recording</button>
+      <button id="stopRecording" class="danger" disabled>Stop Recording</button>
+    </div>
+    <div style="margin-top: 16px;">
+      <strong>Capture Source</strong>
+      <select id="sourceSelect"></select>
+      <div class="sources-actions">
+        <button id="refreshSources">Refresh Sources</button>
+      </div>
+      <small>If the meeting window is not detected, pick the screen or window manually.</small>
+    </div>
+    <p id="error" style="color: #dc2626; min-height: 20px;"></p>
+  </div>
+  <div class="card">
+    <h3>Recent Activity</h3>
+    <div class="log" id="log"></div>
+  </div>
+  <script type="module" src="./renderer.js"></script>
+</body>
+</html>

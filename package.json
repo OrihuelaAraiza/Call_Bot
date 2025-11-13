@@ -1,0 +1,41 @@
+{
+  "name": "salescallassistant",
+  "productName": "SalesCallAssistant",
+  "version": "0.1.0",
+  "description": "Tray-based assistant that detects online meetings and records sales calls.",
+  "main": "main.js",
+  "author": "SalesCallAssistant Team",
+  "license": "MIT",
+  "scripts": {
+    "dev": "electron .",
+    "build": "electron-builder"
+  },
+  "dependencies": {
+    "active-win": "^8.2.1",
+    "electron": "^32.2.1",
+    "electron-is-dev": "^3.0.1"
+  },
+  "devDependencies": {
+    "electron-builder": "^25.0.5"
+  },
+  "build": {
+    "appId": "com.salescallassistant.app",
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "recordings/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": "dmg"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "directories": {
+      "buildResources": "build"
+    }
+  }
+}
