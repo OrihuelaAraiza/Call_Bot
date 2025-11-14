@@ -1,10 +1,11 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, desktopCapturer } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const isDev = require('electron-is-dev');
 
 const MeetingDetector = require('./src/services/meetingDetector');
 const { ensureSettingsFile, getSettings, saveSettings } = require('./src/config/settingsStore');
+
+const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 
 let mainWindow;
 let tray;
@@ -113,6 +114,10 @@ function handleIpc() {
   ipcMain.handle('settings:get', () => getSettings());
 
   ipcMain.handle('settings:set', (_, payload) => saveSettings(payload));
+
+  ipcMain.handle('DESKTOP_CAPTURER_GET_SOURCES', (_, options) =>
+    desktopCapturer.getSources(options || { types: ['screen', 'window'] })
+  );
 
   ipcMain.on('meeting:startRecording', (_, meta) => {
     isRecording = true;

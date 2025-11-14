@@ -1,5 +1,4 @@
-const { contextBridge, ipcRenderer, desktopCapturer } = require('electron');
-const { Buffer } = require('buffer');
+const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   onMeetingStatus: (callback) => {
@@ -12,9 +11,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   stopRecordingNotice: () => ipcRenderer.send('meeting:stopRecording'),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setSettings: (settings) => ipcRenderer.invoke('settings:set', settings),
-  getDesktopSources: (options) => desktopCapturer.getSources(options),
-  saveRecording: ({ buffer, meta }) => {
-    const nodeBuffer = Buffer.from(buffer);
-    return ipcRenderer.invoke('recorder:save', { buffer: nodeBuffer, meta });
-  }
+  getDesktopSources: (options) => ipcRenderer.invoke('DESKTOP_CAPTURER_GET_SOURCES', options),
+  saveRecording: ({ buffer, meta }) =>
+    ipcRenderer.invoke('recorder:save', { buffer: Buffer.from(buffer), meta })
 });
