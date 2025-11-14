@@ -1,0 +1,24 @@
+# Node / Electron dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
+dist/
+out/
+build/*.log
+
+# Electron-builder artifacts
+*.dmg
+*.exe
+*.msi
+*.zip
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Recordings (keep placeholder file)
+recordings/**
+!recordings/.gitkeep
