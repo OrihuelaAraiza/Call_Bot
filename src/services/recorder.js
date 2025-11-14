@@ -1,163 +1,151 @@
-let mediaRecorder;
-let recordedChunks = [];
-let currentStream;
-let recordingMeta = null;
-let stopResolve;
-let stopReject;
+// src/services/recorder.js
+// Full replacement — robust chunk handling and error logs
 
-export function isRecording() {
-  return Boolean(mediaRecorder && mediaRecorder.state === 'recording');
-}
+let mediaRecorder = null;
+let chunks = [];
+let currentStream = null;
+let isRecording = false;
 
-export async function listAvailableSources() {
-  return window.electronAPI.getDesktopSources({
-    types: ['screen', 'window'],
-    thumbnailSize: { width: 320, height: 180 }
-  });
-}
+const listeners = {
+  onStatusChange: null,
+};
 
-function matchSource(sources, meetingMeta, selectedSourceId) {
-  if (!Array.isArray(sources) || !sources.length) {
-    return null;
-  }
-
-  if (selectedSourceId) {
-    const manual = sources.find((source) => source.id === selectedSourceId);
-    if (manual) {
-      return manual;
-    }
-  }
-
-  if (meetingMeta?.title) {
-    const titleMatch = sources.find((source) =>
-      source.name?.toLowerCase().includes(meetingMeta.title.toLowerCase())
-    );
-    if (titleMatch) {
-      return titleMatch;
-    }
-  }
-
-  if (meetingMeta?.app) {
-    const appMatch = sources.find((source) =>
-      source.name?.toLowerCase().includes(meetingMeta.app.toLowerCase())
-    );
-    if (appMatch) {
-      return appMatch;
-    }
-  }
-
-  return sources[0];
-}
-
-function stopTracks() {
-  if (currentStream) {
-    currentStream.getTracks().forEach((track) => track.stop());
-    currentStream = null;
+function notifyStatus(status, message) {
+  console.log('[Recorder]', status, message || '');
+  if (typeof listeners.onStatusChange === 'function') {
+    listeners.onStatusChange(status, message);
   }
 }
 
-export async function startRecording(meetingMeta = {}, selectedSourceId) {
-  if (isRecording()) {
-    throw new Error('Recording already in progress.');
-  }
+export function setOnStatusChangeListener(cb) {
+  listeners.onStatusChange = cb;
+}
 
-  const sources = await listAvailableSources();
-  const targetSource = matchSource(sources, meetingMeta, selectedSourceId);
-  if (!targetSource) {
-    throw new Error('No capture sources are available. Please share permissions and retry.');
+function getSupportedMimeType() {
+  const candidates = [
+    "video/webm; codecs=vp9,opus",
+    "video/webm; codecs=vp8,opus",
+    "video/webm"
+  ];
+  for (const type of candidates) {
+    if (MediaRecorder.isTypeSupported(type)) return type;
   }
+  return "";
+}
 
+export async function startRecordingForSource(sourceId) {
   try {
+    if (isRecording) return;
+
+    // close previous stream
+    if (currentStream) {
+      currentStream.getTracks().forEach(t => t.stop());
+      currentStream = null;
+    }
+
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         mandatory: {
-          chromeMediaSource: 'desktop'
+          chromeMediaSource: "desktop",
+          chromeMediaSourceId: sourceId,
         }
       },
       video: {
         mandatory: {
-          chromeMediaSource: 'desktop',
-          chromeMediaSourceId: targetSource.id
+          chromeMediaSource: "desktop",
+          chromeMediaSourceId: sourceId,
         }
       }
     });
 
-    currentStream = stream;
-    recordedChunks = [];
-    recordingMeta = {
-      startedAt: Date.now(),
-      meetingMeta,
-      sourceName: targetSource.name
-    };
-
-    const options = {};
-    if (window.MediaRecorder && typeof window.MediaRecorder.isTypeSupported === 'function') {
-      if (window.MediaRecorder.isTypeSupported('video/webm; codecs=vp9')) {
-        options.mimeType = 'video/webm; codecs=vp9';
-      } else if (window.MediaRecorder.isTypeSupported('video/webm; codecs=vp8')) {
-        options.mimeType = 'video/webm; codecs=vp8';
-      }
-    } else {
-      // TODO: Provide fallback encoding when MediaRecorder is unavailable on older platforms.
+    if (!stream || stream.getTracks().length === 0) {
+      notifyStatus("error", "Screen stream has no tracks. macOS permissions missing.");
+      return;
     }
 
-    mediaRecorder = new MediaRecorder(stream, options);
+    currentStream = stream;
+    chunks = [];
+
+    const mimeType = getSupportedMimeType();
+    mediaRecorder = mimeType
+      ? new MediaRecorder(stream, { mimeType })
+      : new MediaRecorder(stream);
 
     mediaRecorder.ondataavailable = (event) => {
       if (event.data && event.data.size > 0) {
-        recordedChunks.push(event.data);
+        chunks.push(event.data);
       }
     };
 
     mediaRecorder.onerror = (event) => {
-      console.error('MediaRecorder error', event.error || event);
-      stopReject?.(event.error);
+      console.error("[Recorder] MediaRecorder error:", event.error);
+      notifyStatus("error", event.error?.message);
     };
 
     mediaRecorder.onstop = async () => {
       try {
-        const blob = new Blob(recordedChunks, { type: 'video/webm' });
+        if (!chunks.length) {
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        }
+        if (!chunks.length) {
+          notifyStatus("error", "No media captured. Keep recording a bit longer or fix OS permissions.");
+          return;
+        }
+
+        const blob = new Blob(chunks, { type: "video/webm" });
         const arrayBuffer = await blob.arrayBuffer();
-        const savedPath = await window.electronAPI.saveRecording({
-          buffer: arrayBuffer,
+        const buffer = Buffer.from(arrayBuffer);
+
+        window.electronAPI.sendRecordingBuffer({
+          buffer,
           meta: {
-            ...recordingMeta,
-            stoppedAt: Date.now()
+            app: window.currentMeetingApp || "unknown",
+            title: window.currentMeetingTitle || "unknown",
+            startedAt: window.recordingStartedAt || new Date().toISOString()
           }
         });
-        stopResolve?.({ filePath: savedPath, sourceName: recordingMeta?.sourceName });
-      } catch (error) {
-        stopReject?.(error);
+
+        notifyStatus("idle", "Recording saved and sent.");
+      } catch (err) {
+        console.error("[Recorder] onstop error:", err);
+        notifyStatus("error", "Failed to finalize recording.");
       } finally {
-        cleanup();
+        if (currentStream) currentStream.getTracks().forEach(t => t.stop());
+        currentStream = null;
+        chunks = [];
+        mediaRecorder = null;
+        isRecording = false;
       }
     };
 
-    mediaRecorder.start();
-    return { sourceName: targetSource.name };
-  } catch (error) {
-    stopTracks();
-    throw error;
+    mediaRecorder.start(1000);
+    isRecording = true;
+    window.recordingStartedAt = new Date().toISOString();
+    notifyStatus("recording", "Recording started.");
+
+  } catch (err) {
+    console.error("[Recorder] Failed to start:", err);
+    notifyStatus("error", "Failed to start recording. Check permissions.");
   }
 }
 
-export async function stopRecording() {
-  if (!isRecording()) {
-    return null;
-  }
-
-  return new Promise((resolve, reject) => {
-    stopResolve = resolve;
-    stopReject = reject;
+export function stopRecording() {
+  if (!isRecording || !mediaRecorder) return;
+  try {
+    if (typeof mediaRecorder.requestData === 'function') {
+      try {
+        mediaRecorder.requestData();
+      } catch (requestError) {
+        console.warn('[Recorder] requestData failed', requestError);
+      }
+    }
     mediaRecorder.stop();
-  });
+  } catch (err) {
+    console.error("[Recorder] stop error:", err);
+    notifyStatus("error", "Unable to stop recording.");
+  }
 }
 
-function cleanup() {
-  stopTracks();
-  mediaRecorder = null;
-  recordedChunks = [];
-  recordingMeta = null;
-  stopResolve = null;
-  stopReject = null;
+export function getIsRecording() {
+  return isRecording;
 }

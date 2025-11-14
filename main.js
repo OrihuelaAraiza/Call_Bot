@@ -1,9 +1,23 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, desktopCapturer } = require('electron');
+const {
+  app,
+  BrowserWindow,
+  Tray,
+  Menu,
+  ipcMain,
+  nativeImage,
+  desktopCapturer,
+  systemPreferences
+} = require('electron');
 const path = require('path');
 const fs = require('fs');
 
 const MeetingDetector = require('./src/services/meetingDetector');
 const { ensureSettingsFile, getSettings, saveSettings } = require('./src/config/settingsStore');
+
+const ffmpeg = require('fluent-ffmpeg');
+const ffmpegPath = require('ffmpeg-static');
+
+ffmpeg.setFfmpegPath(ffmpegPath);
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 
@@ -16,11 +30,8 @@ const recordingsDir = path.join(__dirname, 'recordings');
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
-    width: 420,
-    height: 580,
-    show: false,
-    resizable: false,
-    title: 'Sales Call Assistant',
+    width: 900,
+    height: 700,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -29,11 +40,10 @@ function createMainWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'src/renderer/index.html'));
-  mainWindow.once('ready-to-show', () => {
-    if (isDev) {
-      mainWindow.show();
-    }
-  });
+
+  if (isDev) {
+    mainWindow.webContents.openDevTools({ mode: 'detach' });
+  }
 
   mainWindow.on('close', (event) => {
     if (!app.isQuitting) {
@@ -101,11 +111,31 @@ function sendStatusUpdate() {
 
 function updateTrayTooltip(status) {
   if (!tray) return;
-  const meetingLabel = status.isInMeeting
-    ? `In meeting (${status.app || 'unknown'})`
-    : 'Idle';
+  const meetingLabel = status.isInMeeting ? `In meeting (${status.app || 'unknown'})` : 'Idle';
   const recordingLabel = isRecording ? ' • Recording' : '';
   tray.setToolTip(`Sales Call Assistant - ${meetingLabel}${recordingLabel}`);
+}
+
+function normalizeRecordingBuffer(payload) {
+  if (!payload) {
+    return null;
+  }
+  if (Buffer.isBuffer(payload)) {
+    return payload;
+  }
+  if (payload instanceof Uint8Array) {
+    return Buffer.from(payload);
+  }
+  if (payload?.buffer instanceof ArrayBuffer) {
+    return Buffer.from(payload.buffer);
+  }
+  if (Array.isArray(payload)) {
+    return Buffer.from(payload);
+  }
+  if (payload?.type === 'Buffer' && Array.isArray(payload.data)) {
+    return Buffer.from(payload.data);
+  }
+  return null;
 }
 
 function handleIpc() {
@@ -119,6 +149,17 @@ function handleIpc() {
     desktopCapturer.getSources(options || { types: ['screen', 'window'] })
   );
 
+  ipcMain.handle('permissions:getStatus', () => getPermissionStatus());
+  ipcMain.handle('permissions:requestMicrophone', async () => {
+    try {
+      const granted = await systemPreferences.askForMediaAccess('microphone');
+      return granted ? 'granted' : 'denied';
+    } catch (error) {
+      console.error('Microphone permission request failed', error);
+      throw error;
+    }
+  });
+
   ipcMain.on('meeting:startRecording', (_, meta) => {
     isRecording = true;
     currentStatus = { ...currentStatus, meetingMeta: meta };
@@ -130,22 +171,91 @@ function handleIpc() {
     sendStatusUpdate();
   });
 
-  ipcMain.handle('recorder:save', async (_, { buffer, meta }) => {
-    const timestamp = new Date().toISOString().replace(/[:]/g, '-');
-    const label = meta?.meetingMeta?.app || meta?.meetingMeta?.title || 'unknown';
-    const filename = `${timestamp}_${label}.webm`;
-    const targetPath = path.join(recordingsDir, filename);
-    await fs.promises.writeFile(targetPath, buffer);
-    onRecordingSaved(targetPath, meta);
-    return targetPath;
+  ipcMain.on('recording:buffer', async (_event, payload) => {
+    console.log('[Main] Received recording buffer.');
+    try {
+      await saveAndConvert(payload);
+    } catch (error) {
+      console.error('[Main] Failed to save/convert recording', error);
+    }
   });
 }
 
-function onRecordingSaved(filePath, meta) {
-  console.log(`Recording saved at: ${filePath}`);
-  console.log('TODO: upload to backend with meeting metadata', meta);
-  // TODO: Implement POST upload to backend (e.g., using fetch with FormData that streams the file
-  // and attaches meta fields such as meeting app, start/end timestamps, etc.).
+function getPermissionStatus() {
+  const normalize = (status) => status || 'unknown';
+  const screen = (() => {
+    try {
+      return normalize(systemPreferences.getMediaAccessStatus('screen'));
+    } catch (error) {
+      return 'unknown';
+    }
+  })();
+
+  const microphone = (() => {
+    try {
+      return normalize(systemPreferences.getMediaAccessStatus('microphone'));
+    } catch (error) {
+      return 'unknown';
+    }
+  })();
+
+  const accessibility = (() => {
+    try {
+      return systemPreferences.isTrustedAccessibilityClient(false) ? 'granted' : 'denied';
+    } catch (error) {
+      return 'unknown';
+    }
+  })();
+
+  return { screen, microphone, accessibility };
+}
+
+function timestamp() {
+  return new Date().toISOString().replace(/:/g, '-').replace(/\..+/, '');
+}
+
+function convertWebmToMp4(webmPath) {
+  return new Promise((resolve, reject) => {
+    const mp4Path = webmPath.replace(/\.webm$/i, '.mp4');
+
+    ffmpeg(webmPath)
+      .outputOptions('-movflags', 'faststart')
+      .toFormat('mp4')
+      .on('end', () => {
+        console.log('[FFmpeg] Converted:', mp4Path);
+        resolve(mp4Path);
+      })
+      .on('error', (err) => {
+        console.error('[FFmpeg] Error:', err);
+        reject(err);
+      })
+      .save(mp4Path);
+  });
+}
+
+async function saveAndConvert({ buffer, meta }) {
+  const recordingBuffer = normalizeRecordingBuffer(buffer);
+  if (!recordingBuffer || recordingBuffer.length === 0) {
+    throw new Error('Recording stream produced an empty buffer.');
+  }
+
+  const fname = `${timestamp()}_${meta?.app || 'unknown'}.webm`;
+  const webmPath = path.join(recordingsDir, fname);
+
+  await fs.promises.writeFile(webmPath, recordingBuffer);
+  console.log('[Main] Saved .webm at:', webmPath);
+
+  try {
+    const mp4Path = await convertWebmToMp4(webmPath);
+
+    if (mainWindow) {
+      mainWindow.webContents.send('recording:finished', { mp4Path, meta });
+    }
+
+    console.log('[Main] Final .mp4 ready:', mp4Path);
+  } catch (err) {
+    console.error('[Main] Convert error:', err);
+  }
 }
 
 app.whenReady().then(() => {
@@ -155,9 +265,6 @@ app.whenReady().then(() => {
   createTray();
   setupMeetingDetector();
   handleIpc();
-  if (isDev) {
-    mainWindow.webContents.openDevTools({ mode: 'detach' });
-  }
 });
 
 app.on('before-quit', () => {

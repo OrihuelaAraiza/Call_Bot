@@ -92,6 +92,23 @@
       background: #e2e8f0;
       color: #0f172a;
     }
+
+    .permission-status {
+      list-style: none;
+      padding-left: 0;
+      margin-top: 12px;
+    }
+
+    .permission-status li {
+      margin-bottom: 6px;
+    }
+
+    .permission-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
   </style>
 </head>
 <body>
@@ -121,6 +138,15 @@
       <small>If the meeting window is not detected, pick the screen or window manually.</small>
     </div>
     <p id="error" style="color: #dc2626; min-height: 20px;"></p>
+  </div>
+  <div class="card">
+    <h3>System Permissions</h3>
+    <p>Use this check if recordings fail. macOS requires screen recording, microphone, and accessibility access.</p>
+    <div class="permission-actions">
+      <button id="checkPermissions">Check Permissions</button>
+      <button id="requestMicrophone">Request Microphone Access</button>
+    </div>
+    <ul class="permission-status" id="permissionStatus"></ul>
   </div>
   <div class="card">
     <h3>Recent Activity</h3>

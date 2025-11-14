@@ -1,4 +1,9 @@
-import { startRecording, stopRecording, isRecording, listAvailableSources } from '../services/recorder.js';
+import {
+  startRecordingForSource,
+  stopRecording,
+  getIsRecording,
+  setOnStatusChangeListener
+} from '../services/recorder.js';
 
 const statusEl = document.getElementById('status');
 const detailEl = document.getElementById('meetingDetail');
@@ -9,10 +14,25 @@ const logEl = document.getElementById('log');
 const errorEl = document.getElementById('error');
 const sourceSelect = document.getElementById('sourceSelect');
 const refreshSourcesBtn = document.getElementById('refreshSources');
+const checkPermissionsBtn = document.getElementById('checkPermissions');
+const requestMicBtn = document.getElementById('requestMicrophone');
+const permissionStatusEl = document.getElementById('permissionStatus');
 
 let autoStartEnabled = false;
 let meetingStatus = { isInMeeting: false, app: null, title: null };
 let availableSources = [];
+let lastPermissionStatus = null;
+
+function isRecording() {
+  return getIsRecording();
+}
+
+async function listAvailableSources() {
+  return window.electronAPI.getDesktopSources({
+    types: ['screen', 'window'],
+    thumbnailSize: { width: 320, height: 180 }
+  });
+}
 
 function log(message) {
   const time = new Date().toLocaleTimeString();
@@ -35,6 +55,83 @@ function updateButtons() {
   startBtn.disabled = isRecording();
   stopBtn.disabled = !isRecording();
 }
+
+function renderPermissionStatus(status) {
+  if (!permissionStatusEl) return;
+  lastPermissionStatus = status;
+  permissionStatusEl.innerHTML = '';
+
+  if (!status) {
+    const li = document.createElement('li');
+    li.textContent = 'Unable to read permission status.';
+    li.style.color = '#dc2626';
+    permissionStatusEl.appendChild(li);
+    return;
+  }
+
+  const entries = [
+    ['screen', status.screen],
+    ['microphone', status.microphone],
+    ['accessibility', status.accessibility]
+  ];
+
+  entries.forEach(([label, value]) => {
+    const li = document.createElement('li');
+    const normalized = (value || 'unknown').toLowerCase();
+    li.textContent = `${label.replace(/^[a-z]/, (c) => c.toUpperCase())}: ${normalized}`;
+    li.style.color = normalized === 'granted' ? '#15803d' : '#dc2626';
+    permissionStatusEl.appendChild(li);
+  });
+
+  if (requestMicBtn) {
+    const micGranted = (status?.microphone || '').toLowerCase() === 'granted';
+    requestMicBtn.disabled = micGranted;
+  }
+}
+
+async function refreshPermissionStatus({ silent } = {}) {
+  try {
+    const status = await window.electronAPI.getPermissionStatus();
+    renderPermissionStatus(status);
+    if (!silent) {
+      log('Permission status refreshed.');
+    }
+  } catch (error) {
+    console.error('Unable to retrieve permission status', error);
+    renderPermissionStatus(null);
+    if (!silent) {
+      setError('Unable to read permission status. Check console logs.');
+    }
+  }
+}
+
+async function requestMicrophoneAccess() {
+  try {
+    const result = await window.electronAPI.requestMicrophonePermission();
+    if (result === 'granted') {
+      log('Microphone access granted.');
+    } else {
+      setError('Microphone access denied. Enable it in System Settings > Privacy & Security > Microphone.');
+      log('Microphone access denied by system.');
+    }
+    await refreshPermissionStatus({ silent: true });
+  } catch (error) {
+    console.error('Unable to request microphone access', error);
+    setError('Unable to prompt for microphone access. Check console logs.');
+  }
+}
+
+setOnStatusChangeListener((status, message) => {
+  if (status === 'error') {
+    setError(message || 'Recorder error.');
+    log(`Recorder error: ${message || 'Unknown'}`);
+  } else if (status === 'recording') {
+    setError('');
+  } else if (status === 'idle') {
+    setError('');
+  }
+  updateButtons();
+});
 
 async function hydrateSettings() {
   try {
@@ -67,11 +164,20 @@ async function handleMeetingStatus(status) {
 async function startRecordingFlow(reason = 'manual') {
   setError();
   try {
-    const selected = sourceSelect.value || undefined;
-    const { sourceName } = await startRecording(meetingStatus, selected);
+    const selected = sourceSelect.value;
+    if (!selected) {
+      setError('Select a screen/window to capture.');
+      return;
+    }
+
+    window.currentMeetingApp = meetingStatus.app || 'unknown';
+    window.currentMeetingTitle = meetingStatus.title || 'unknown';
+    window.recordingStartedAt = new Date().toISOString();
+
+    await startRecordingForSource(selected);
     window.electronAPI.startRecordingNotice(meetingStatus);
     updateButtons();
-    log(`Recording started (${reason}) on source: ${sourceName}`);
+    log(`Recording started (${reason}) on source: ${selected}`);
   } catch (error) {
     console.error('Unable to start recording', error);
     handleMediaError(error);
@@ -80,14 +186,10 @@ async function startRecordingFlow(reason = 'manual') {
 
 async function stopRecordingFlow(reason = 'manual-stop') {
   try {
-    const result = await stopRecording();
+    stopRecording();
     window.electronAPI.stopRecordingNotice();
     updateButtons();
-    if (result?.filePath) {
-      log(`Recording saved to: ${result.filePath}`);
-    } else {
-      log(`Recording ended (${reason}).`);
-    }
+    log(`Recording stop requested (${reason}).`);
   } catch (error) {
     console.error('Unable to stop recording', error);
     setError('Unable to stop recording. Check console logs for details.');
@@ -147,6 +249,12 @@ function wireEvents() {
   startBtn.addEventListener('click', () => startRecordingFlow());
   stopBtn.addEventListener('click', () => stopRecordingFlow());
   refreshSourcesBtn.addEventListener('click', () => refreshSources(sourceSelect.value));
+  if (checkPermissionsBtn) {
+    checkPermissionsBtn.addEventListener('click', () => refreshPermissionStatus({ silent: false }));
+  }
+  if (requestMicBtn) {
+    requestMicBtn.addEventListener('click', () => requestMicrophoneAccess());
+  }
 
   autoStartToggle.addEventListener('change', async (event) => {
     autoStartEnabled = event.target.checked;
@@ -155,12 +263,22 @@ function wireEvents() {
   });
 
   window.electronAPI.onMeetingStatus((status) => handleMeetingStatus(status));
+
+  window.electronAPI.onRecordingFinished((payload) => {
+    if (payload?.mp4Path) {
+      log(`Recording converted and saved to: ${payload.mp4Path}`);
+    } else {
+      log('Recording finished.');
+    }
+    updateButtons();
+  });
 }
 
 async function bootstrap() {
   await hydrateSettings();
   wireEvents();
   await refreshSources();
+  await refreshPermissionStatus({ silent: true });
 
   const initialStatus = await window.electronAPI.requestInitialStatus();
   if (initialStatus) {
